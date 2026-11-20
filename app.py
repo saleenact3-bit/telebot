@@ -8,14 +8,9 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-# Environment variables
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "").strip()
 PUBLIC_URL = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
@@ -28,70 +23,36 @@ WELCOME_VIDEO_URL = os.environ.get(
     "WELCOME_VIDEO_URL", ""
 ).strip()
 
-UPDATE_DB_PATH = os.environ.get(
-    "UPDATE_DB_PATH",
-    "/tmp/telegram_processed_updates.sqlite3"
-)
-
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN is missing")
-
-if not WEBHOOK_SECRET:
-    raise RuntimeError("WEBHOOK_SECRET is missing")
-
-allowed_secret_chars = (
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "abcdefghijklmnopqrstuvwxyz"
-    "0123456789_-"
-)
-
-if (
-    not 1 <= len(WEBHOOK_SECRET) <= 256
-    or any(
-        character not in allowed_secret_chars
-        for character in WEBHOOK_SECRET
-    )
-):
-    raise RuntimeError(
-        "WEBHOOK_SECRET must contain only "
-        "English letters, numbers, underscores or hyphens "
-        "and must be 1–256 characters long"
-    )
-
 API = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
+DATABASE_PATH = os.environ.get(
+    "UPDATE_DB_PATH",
+    "/tmp/telegram_join_requests.sqlite3"
+)
 
-# Duplicate update database
-def init_update_database():
-    with sqlite3.connect(
-        UPDATE_DB_PATH,
-        timeout=10
-    ) as connection:
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS processed_updates (
-                update_id INTEGER PRIMARY KEY,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+
+# Remember requests that have already been handled.
+def prepare_database():
+    with sqlite3.connect(DATABASE_PATH, timeout=10) as db:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS handled_requests (
+                update_id INTEGER PRIMARY KEY
             )
         """)
 
 
-def claim_update(update_id):
-    with sqlite3.connect(
-        UPDATE_DB_PATH,
-        timeout=10
-    ) as connection:
-        cursor = connection.execute(
+def is_new_request(update_id):
+    with sqlite3.connect(DATABASE_PATH, timeout=10) as db:
+        cursor = db.execute(
             """
-            INSERT OR IGNORE INTO processed_updates (update_id)
+            INSERT OR IGNORE INTO handled_requests (update_id)
             VALUES (?)
             """,
             (update_id,)
         )
-
         return cursor.rowcount == 1
 
 
-# Telegram API helper
 def telegram_send(method, data):
     try:
         response = requests.post(
@@ -100,9 +61,8 @@ def telegram_send(method, data):
             timeout=(5, 25)
         )
     except requests.RequestException as error:
-        # Do not log the request URL: it contains the bot token.
         logger.error(
-            "Telegram %s request failed (%s)",
+            "Telegram %s request failed: %s",
             method,
             type(error).__name__
         )
@@ -112,9 +72,8 @@ def telegram_send(method, data):
         result = response.json()
     except ValueError:
         logger.error(
-            "Telegram %s returned a non-JSON response; HTTP %s",
-            method,
-            response.status_code
+            "Telegram returned an invalid response for %s",
+            method
         )
         return False
 
@@ -129,40 +88,7 @@ def telegram_send(method, data):
     return True
 
 
-def send_text(chat_id, text):
-    return telegram_send(
-        "sendMessage",
-        {
-            "chat_id": chat_id,
-            "text": text
-        }
-    )
-
-
-def send_image(chat_id, image_url, caption=""):
-    return telegram_send(
-        "sendPhoto",
-        {
-            "chat_id": chat_id,
-            "photo": image_url,
-            "caption": caption
-        }
-    )
-
-
-def send_video(chat_id, video_url, caption=""):
-    return telegram_send(
-        "sendVideo",
-        {
-            "chat_id": chat_id,
-            "video": video_url,
-            "caption": caption
-        }
-    )
-
-
-# Edit your welcome message here
-def send_welcome(user_chat_id, first_name):
+def send_welcome(chat_id, first_name):
     message = (
         f"👋 <b>Welcome, {first_name}!</b>
 
@@ -173,33 +99,34 @@ Your join request has been received successfully.
 Please wait for approval.
 
 ━━━━━━━━━━━━━━"
+
     )
 
-    text_sent = send_text(user_chat_id, message)
-
-    image_sent = None
-    video_sent = None
+    telegram_send(
+        "sendMessage",
+        {
+            "chat_id": chat_id,
+            "text": message
+        }
+    )
 
     if WELCOME_IMAGE_URL:
-        image_sent = send_image(
-            user_chat_id,
-            WELCOME_IMAGE_URL,
-            "Welcome to our VIP Channel!"
+        telegram_send(
+            "sendPhoto",
+            {
+                "chat_id": chat_id,
+                "photo": WELCOME_IMAGE_URL
+            }
         )
 
     if WELCOME_VIDEO_URL:
-        video_sent = send_video(
-            user_chat_id,
-            WELCOME_VIDEO_URL,
-            "Please watch this important video."
+        telegram_send(
+            "sendVideo",
+            {
+                "chat_id": chat_id,
+                "video": WELCOME_VIDEO_URL
+            }
         )
-
-    logger.info(
-        "Welcome results: text=%s image=%s video=%s",
-        text_sent,
-        image_sent,
-        video_sent
-    )
 
 
 @app.route("/", methods=["GET"])
@@ -213,7 +140,7 @@ def webhook():
         "X-Telegram-Bot-Api-Secret-Token"
     )
 
-    if received_secret != WEBHOOK_SECRET:
+    if not WEBHOOK_SECRET or received_secret != WEBHOOK_SECRET:
         return jsonify({"ok": False}), 403
 
     update = request.get_json(silent=True)
@@ -233,17 +160,14 @@ def webhook():
         return jsonify({"ok": True}), 200
 
     try:
-        is_new_update = claim_update(update_id)
+        new_request = is_new_request(update_id)
     except sqlite3.Error:
-        logger.exception(
-            "Database error checking update_id=%s",
-            update_id
-        )
+        logger.exception("Database check failed")
         return jsonify({"ok": False}), 503
 
-    if not is_new_update:
+    if not new_request:
         logger.info(
-            "Duplicate update skipped: update_id=%s",
+            "Duplicate skipped: %s",
             update_id
         )
         return jsonify({"ok": True}), 200
@@ -252,34 +176,30 @@ def webhook():
     first_name = user.get("first_name") or "Friend"
 
     logger.info(
-        "Sending welcome: update_id=%s",
+        "Sending welcome: %s",
         update_id
     )
 
     try:
         send_welcome(user_chat_id, first_name)
     except Exception:
-        logger.exception(
-            "Welcome failed: update_id=%s",
-            update_id
-        )
+        logger.exception("Welcome sending failed")
 
     return jsonify({"ok": True}), 200
 
 
 def setup_webhook():
-    if not PUBLIC_URL:
+    if not BOT_TOKEN or not WEBHOOK_SECRET or not PUBLIC_URL:
         logger.error(
-            "Webhook setup skipped: RENDER_EXTERNAL_URL is missing"
+            "BOT_TOKEN, WEBHOOK_SECRET or "
+            "RENDER_EXTERNAL_URL is missing"
         )
-        return False
-
-    webhook_url = PUBLIC_URL.rstrip("/") + "/webhook"
+        return
 
     success = telegram_send(
         "setWebhook",
         {
-            "url": webhook_url,
+            "url": PUBLIC_URL.rstrip("/") + "/webhook",
             "secret_token": WEBHOOK_SECRET,
             "allowed_updates": ["chat_join_request"],
             "max_connections": 1
@@ -287,11 +207,9 @@ def setup_webhook():
     )
 
     logger.info("Webhook setup: %s", success)
-    return success
 
 
-# Run when Gunicorn imports this module
-init_update_database()
+prepare_database()
 setup_webhook()
 
 
