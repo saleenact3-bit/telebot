@@ -94,14 +94,10 @@ def send_welcome(chat_id, first_name):
     safe_first_name = escape(first_name)
 
     message = (
-        f"👋 <b>Welcome, {safe_first_name}!</b>\n\n" 
-        
+        f"👋 <b>Welcome, {safe_first_name}!</b>\n\n"
         "Thank you for requesting to join our VIP Channel.\n\n"
-        
         "Your join request has been received successfully.\n\n"
-        
         "Please wait for approval.\n\n"
-        
         "━━━━━━━━━━━━━━"
     )
 
@@ -109,7 +105,8 @@ def send_welcome(chat_id, first_name):
         "sendMessage",
         {
             "chat_id": chat_id,
-            "text": message
+            "text": message,
+            "parse_mode": "HTML"
         }
     )
 
