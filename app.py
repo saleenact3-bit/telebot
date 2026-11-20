@@ -95,7 +95,7 @@ def send_welcome(chat_id, first_name):
 
     message = (
         f"👋 <b>Welcome, {safe_first_name}!</b>\n\n"
-        "Thank you for requesting to join our VIP Channel.\n\n"
+        "Thank you for requesting to join our EARNING STAR.\n\n"
         "Your join request has been received successfully.\n\n"
         "Please wait for approval.\n\n"
         "━━━━━━━━━━━━━━"
