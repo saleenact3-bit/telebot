@@ -65,7 +65,7 @@ def send_video(chat_id, video_url, caption=""):
 
 def send_welcome(user_chat_id, first_name):
     text = f"""
-👋 <b>Welcome, {first_name}!</b>
+👋 <b>Welcome to eraning star team, {first_name}!</b>
 
 Thank you for requesting to join our VIP Channel.
 
@@ -75,11 +75,6 @@ Please wait for approval.
 
 ━━━━━━━━━━━━━━
 
-👋 <b>സ്വാഗതം, {first_name}!</b>
-
-ഞങ്ങളുടെ VIP Channel-ൽ ചേരാനുള്ള request വിജയകരമായി ലഭിച്ചു.
-
-ദയവായി approval-നായി കാത്തിരിക്കുക.
 """
 
     send_text(user_chat_id, text)
